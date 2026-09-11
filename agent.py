@@ -27,9 +27,15 @@ llm = AzureChatOpenAI(
 
 def chat_node(state: AgentState):
     """Generates the next response and checks for the completion trigger."""
-    # Inject encounter note into system prompt dynamically
+    # Count assistant messages to track how many questions have been asked
+    questions_asked = sum(1 for m in state["messages"] if isinstance(m, AIMessage))
+    
+    # Inject encounter note and question count into system prompt dynamically
     system_message = SystemMessage(
-        content=CHAT_SYSTEM_PROMPT.format(encounter_note=state["encounter_note"])
+        content=CHAT_SYSTEM_PROMPT.format(
+            encounter_note=state["encounter_note"],
+            questions_asked=questions_asked
+        )
     )
     
     # Construct conversation

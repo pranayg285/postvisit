@@ -37,16 +37,17 @@ class ChatResponse(BaseModel):
     session_id: str
     assistant_message: str
     is_completed: bool
-
 class DimensionBreakdown(BaseModel):
-    condition_trajectory_score: int
-    adherence_score: int
-    red_flag_score: int
+    condition_trajectory_score: str # Changed from int to str for "X/40" format
+    adherence_score: str            # Changed from int to str for "X/30" format
+    red_flag_score: str             # Changed from int to str for "X/30" format
     rationale: str
 
 class StabilityScoreResponse(BaseModel):
-    total_score: int
+    total_score: str                # Changed from int to str for "X/100" format
     tier: str
+    tier_description: str
+    tier_scale: str                 # NEW: Static message showing the three tiers
     breakdown: DimensionBreakdown
     clinical_summary: str
 
