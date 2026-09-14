@@ -2,13 +2,21 @@
 import os
 import uuid
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from openai import AsyncAzureOpenAI
 from dotenv import load_dotenv
+from duckduckgo_search import DDGS
+from fastapi.responses import FileResponse
+from pathlib import Path
+from datetime import datetime
+from fastapi.concurrency import run_in_threadpool
 
 load_dotenv()
+
+# Import the PDF generator script we just created
+from postvisit_report_gen import generate_postvisit_pdf
 
 # Import the LangGraph app and prompts
 from agent import chat_app
@@ -44,18 +52,22 @@ class DimensionBreakdown(BaseModel):
     rationale: str
 
 class StabilityScoreResponse(BaseModel):
-    total_score: str                # Changed from int to str for "X/100" format
+    total_score: str                
     tier: str
     tier_description: str
-    tier_scale: str                 # NEW: Static message showing the three tiers
+    tier_scale: str                 
     breakdown: DimensionBreakdown
     clinical_summary: str
+    reference_links: List[str]
 
 class ScoreRequest(BaseModel):
     session_id: str
 
 class DoctorSummaryResponse(BaseModel):
     summary: str
+    
+class ReportRequest(BaseModel):
+    session_id: str
 
 # --- Endpoints ---
 @app.post("/chat", response_model=ChatResponse)
@@ -117,9 +129,24 @@ async def calculate_stability_score(request: ScoreRequest):
         [f"{msg['role'].upper()}: {msg['content']}" for msg in session_data["history"]]
     )
     
+    # 1. Dynamically fetch 2 real, working US clinical links based on the condition
+    # Fallback to "general health" if diagnosis isn't found in the note
+    condition = session_data["encounter_note"].get("diagnosis", "general health")
+    try:
+        query = f"{condition} patient guidelines site:cdc.gov OR site:aafp.org"
+        search_results = DDGS().text(query, max_results=2)
+        fetched_links = [res.get("href") for res in search_results]
+    except Exception:
+        # Fallback if search fails
+        fetched_links = ["https://www.cdc.gov", "https://www.aafp.org"]
+        
+    formatted_links = "\n".join(fetched_links)
+    
+    # 2. Inject the links into the prompt alongside the note and transcript
     prompt = STABILITY_SCORE_PROMPT.format(
         encounter_note=json.dumps(session_data["encounter_note"], indent=2),
-        transcript=formatted_transcript
+        transcript=formatted_transcript,
+        fetched_links=formatted_links
     )
 
     try:
@@ -165,6 +192,71 @@ async def generate_doctor_summary(request: ScoreRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/generate-report", summary="Generate and Download Post-Visit PDF")
+async def generate_report(request: ReportRequest):
+    session_id = request.session_id
+    
+    # Define paths
+    db_path = Path("DB") / session_id
+    json_file_path = db_path / "postvisit.json"
+    
+    # 1. Check if the session is currently active in memory
+    if session_id in sessions_db:
+        session_data = sessions_db[session_id]
+        encounter_note = session_data.get("encounter_note", {})
+
+        # Await the LLM calls for Score and Summary
+        score_request = ScoreRequest(session_id=session_id)
+        stability_response = await calculate_stability_score(score_request)
+        summary_response = await generate_doctor_summary(score_request)
+
+        # Build the combined JSON payload
+        report_data = {
+            "patient_info": {
+                "name": encounter_note.get("patient_name", "Unknown"),
+                "dob": encounter_note.get("dob", "N/A"),
+                "age": encounter_note.get("age", "N/A"),
+                "sex": encounter_note.get("gender", "N/A")
+            },
+            "facility_info": {
+                "name": "Smart EHR System",
+                "phone": "☎️ (703) 202-1655",
+                "address": "851 N Glebe Rd, Arlington, VA 22203"
+            },
+            "session_details": {
+                "session_id": session_id,
+                "session_date": datetime.now().strftime("%m/%d/%Y %H:%M:%S")
+            },
+            "chief_complaint": encounter_note.get("chief_complaint", "Not specified"),
+            "doctor_summary": summary_response.summary,
+            "stability_score": stability_response.model_dump()
+        }
+
+        # Create directory and save JSON
+        db_path.mkdir(parents=True, exist_ok=True)
+        with open(json_file_path, "w", encoding="utf-8") as f:
+            json.dump(report_data, f, indent=4)
+            
+    # 2. If it's not in memory, check if the JSON file already exists on disk
+    elif not json_file_path.exists():
+        raise HTTPException(
+            status_code=404, 
+            detail="Session not found in memory, and no previously saved JSON report exists."
+        )
+
+    # 3. Generate the PDF (Runs whether we just created the JSON or found an existing one)
+    pdf_path = await run_in_threadpool(generate_postvisit_pdf, session_id, "DB")
+    
+    if not pdf_path or not os.path.exists(pdf_path):
+        raise HTTPException(status_code=500, detail="Failed to generate PDF.")
+
+    # 4. Return the PDF file for download
+    return FileResponse(
+        path=pdf_path, 
+        filename=f"{session_id}_postvisit_report.pdf", 
+        media_type="application/pdf"
+    )
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

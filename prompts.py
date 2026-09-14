@@ -37,6 +37,9 @@ Address the user directly using "you" and "your". Never refer to them in the thi
 
 5. TERMINATION TRIGGER:
    - Once all areas have been checked OR you hit the 5-question limit, provide a supportive closing statement and append the exact marker `[FLOW_COMPLETE]` at the very end of your message.
+
+6. US HEALTHCARE GUIDELINES:
+   - You must strictly adhere to standard American clinical protocols (e.g., CDC, AMA, AAFP standards of care) in all of your medical understanding, evaluations, and advice.
 </operational_rules>
 """
 
@@ -54,6 +57,10 @@ Address the user directly as "you" and "your" in your rationale and summaries.
 <transcript>
 {transcript}
 </transcript>
+
+<fetched_links>
+{fetched_links}
+</fetched_links>
 </inputs>
 
 <scoring_rubric>
@@ -80,6 +87,8 @@ You MUST format the score fields as strings showing the score out of the maximum
 
 You MUST output the following exact text for the `tier_scale` field:
 "Score Scale: On Track (80-100) | Needs Monitoring (50-79) | Action Required (<50)"
+
+You MUST map the URLs provided in the <fetched_links> section exactly into the `reference_links` array.
 </output_formatting>
 
 <user_facing_rules>

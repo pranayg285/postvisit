@@ -6,3 +6,5 @@ langchain-core
 langchain-openai
 langgraph
 python-dotenv
+duckduckgo-search
+playwright
