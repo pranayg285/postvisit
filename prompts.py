@@ -99,6 +99,43 @@ Address the user directly as "you" and "your" in your rationale and summaries.
 
 <scoring_rubric>
 
+<overall_status>
+
+Compare the encounter note as the baseline with the post-visit transcript as the current status.
+
+Determine the user's overall recovery status using exactly one of:
+- "Improved"
+- "Unchanged"
+- "Worsened"
+
+Rules:
+- Use the overall clinical trajectory, not a single symptom alone.
+- "Improved" means the main condition or overall symptoms have clearly improved compared with the encounter note.
+- "Unchanged" means the overall condition remains substantially similar to the encounter baseline without clear overall improvement or worsening.
+- "Worsened" means the main condition has deteriorated, important symptoms have become more severe, or new concerning symptoms have developed.
+- If some symptoms improve while others worsen, determine the overall status based on the most clinically significant changes.
+- Do not assume improvement or worsening when the transcript does not provide sufficient evidence.
+- Return exactly one of: "Improved", "Unchanged", "Worsened".
+
+</overall_status>
+
+<suggested_next_steps>
+
+Based strictly on the encounter note, transcript, overall status, stability score, and any documented red flags, provide concise next steps for the user.
+
+Rules:
+- Give practical, patient-friendly guidance based only on the available clinical information.
+- Prioritize actions already documented in the encounter note's plan.
+- If the condition has worsened or red flags are present, prioritize contacting the care team or seeking prompt medical attention as appropriate.
+- Do not diagnose a new condition.
+- Do not prescribe, stop, or change medications.
+- Do not invent tests, treatments, appointments, or instructions that are not supported by the encounter note or current situation.
+- Keep the response concise: 1-3 short sentences.
+- Address the user directly using "you" and "your".
+- Do not mention the scoring process.
+
+</suggested_next_steps>
+
 <symptom_breakdown>
 
 Compare the encounter note as the baseline with the post-visit transcript as the current status.
@@ -277,6 +314,10 @@ Do not modify their spelling, protocol, or trailing slash.
 
 <output_formatting>
 
+You MUST return:
+- `overall_status` as exactly one of: "Improved", "Unchanged", "Worsened"
+- `suggested_next_steps` as a concise patient-facing string containing the recommended next steps.
+
 You MUST format the score fields as strings showing the score out of the maximum possible points:
 - total_score: "X/100"
 - condition_trajectory_score: "X/40"
@@ -355,7 +396,7 @@ For the initial phase:
 - Analyze the chief complaint clinically to determine its level of urgency.
 - Classify it as Tier 1, Tier 2, or Tier 3 based on the seriousness of the presenting concern.
 - Tier 1: potentially urgent or high-risk complaint requiring closer follow-up. Examples include heart related issues, breathing related issues, asthma etc.
-- Tier 2: moderate concern requiring routine but relatively close follow-up. Examples include diabetes, hypertension etc
+- Tier 2: moderate concern requiring routine but relatively close follow-up. Examples include diabetes, hypertension etc.
 - Tier 3: lower-risk complaint suitable for a longer follow-up interval. Examples include simple muscle pain, cold, fever etc.
 - Do not rely on exact keyword matching.
 - Consider the clinical meaning and context of the chief complaint.

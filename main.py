@@ -68,6 +68,8 @@ class StabilityScoreResponse(BaseModel):
     tier_description: str
     tier_scale: str                 
     breakdown: DimensionBreakdown
+    overall_status: str  # added now
+    suggested_next_steps: str # added now
     symptom_breakdown: List[SymptomBreakdown]
     clinical_summary: str
     reference_links: List[str]
