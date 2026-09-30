@@ -2,12 +2,11 @@
 import os
 import uuid
 import json
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from openai import AsyncAzureOpenAI
 from dotenv import load_dotenv
-from duckduckgo_search import DDGS
 from fastapi.responses import FileResponse
 from pathlib import Path
 from datetime import datetime
@@ -20,7 +19,7 @@ from postvisit_report_gen import generate_postvisit_pdf
 
 # Import the LangGraph app and prompts
 from agent import chat_app
-from prompts import STABILITY_SCORE_PROMPT, DOCTOR_SUMMARY_PROMPT
+from prompts import (STABILITY_SCORE_PROMPT, DOCTOR_SUMMARY_PROMPT, POST_VISIT_NOTIFICATION_PROMPT)
 
 app = FastAPI(title="Post-Visit Check-in API")
 
@@ -31,6 +30,15 @@ client = AsyncAzureOpenAI(
     api_version=os.getenv("AZURE_OPENAI_API_VERSION")
 )
 DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+
+SCORE_BREAKDOWN_INFO = (
+    "Total Stability Score = Condition Trajectory Score + "
+    "Adherence Score + Red Flag Score. "
+    "Condition Trajectory: 0-40 points. "
+    "Adherence: 0-30 points. "
+    "Red Flags: 0-30 points. "
+    "Total: 0-100 points."
+)
 
 # --- In-Memory Database for Testing ---
 sessions_db = {}
@@ -49,16 +57,21 @@ class DimensionBreakdown(BaseModel):
     condition_trajectory_score: str # Changed from int to str for "X/40" format
     adherence_score: str            # Changed from int to str for "X/30" format
     red_flag_score: str             # Changed from int to str for "X/30" format
-    rationale: str
-
+    rationale: str  
+class SymptomBreakdown(BaseModel):
+    symptom: str
+    status: str
+    description: str
 class StabilityScoreResponse(BaseModel):
     total_score: str                
     tier: str
     tier_description: str
     tier_scale: str                 
     breakdown: DimensionBreakdown
+    symptom_breakdown: List[SymptomBreakdown]
     clinical_summary: str
     reference_links: List[str]
+    score_breakdown_info: Optional[str] = None # added now
 
 class ScoreRequest(BaseModel):
     session_id: str
@@ -68,6 +81,15 @@ class DoctorSummaryResponse(BaseModel):
     
 class ReportRequest(BaseModel):
     session_id: str
+    
+class NotificationRequest(BaseModel):
+    session_id: str
+    phase: Literal["initial", "post_score"] = "initial"  # initial or post_score
+class NotificationResponse(BaseModel):
+    notification: str
+    tier: str
+    interval_hours: str
+
 
 # --- Endpoints ---
 @app.post("/chat", response_model=ChatResponse)
@@ -128,19 +150,8 @@ async def calculate_stability_score(request: ScoreRequest):
     formatted_transcript = "\n".join(
         [f"{msg['role'].upper()}: {msg['content']}" for msg in session_data["history"]]
     )
-    
-    # 1. Dynamically fetch 2 real, working US clinical links based on the condition
-    # Fallback to "general health" if diagnosis isn't found in the note
-    condition = session_data["encounter_note"].get("diagnosis", "general health")
-    try:
-        query = f"{condition} patient guidelines site:cdc.gov OR site:aafp.org"
-        search_results = DDGS().text(query, max_results=2)
-        fetched_links = [res.get("href") for res in search_results]
-    except Exception:
-        # Fallback if search fails
-        fetched_links = ["https://www.cdc.gov", "https://www.aafp.org"]
         
-    formatted_links = "\n".join(fetched_links)
+    formatted_links = ""    # updated 
     
     # 2. Inject the links into the prompt alongside the note and transcript
     prompt = STABILITY_SCORE_PROMPT.format(
@@ -159,7 +170,14 @@ async def calculate_stability_score(request: ScoreRequest):
             response_format=StabilityScoreResponse,
             temperature=0.1
         )
-        return completion.choices[0].message.parsed
+        
+        result = completion.choices[0].message.parsed
+        
+        result.score_breakdown_info = SCORE_BREAKDOWN_INFO
+        
+        return result
+        
+    
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -191,6 +209,131 @@ async def generate_doctor_summary(request: ScoreRequest):
         return DoctorSummaryResponse(summary=completion.choices[0].message.content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/post-visit-notification", response_model=NotificationResponse)
+async def post_visit_notification(request: NotificationRequest):
+
+    if request.session_id not in sessions_db:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found."
+        )
+
+    session_data = sessions_db[request.session_id]
+    encounter_note = session_data["encounter_note"]
+
+    chief_complaint = encounter_note.get("chief_complaint", "")
+    patient_name = encounter_note.get("patient_name", "there")
+
+    stability_score = "Not available"
+    tier = "Initial"
+    interval_hours = "Not scheduled"
+
+    # Initial phase (analyzes chief complaint)
+
+    if request.phase == "initial":
+
+        classification = await client.chat.completions.create(
+            model=DEPLOYMENT_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify the clinical seriousness of the chief "
+                        "complaint for post-visit follow-up. "
+                        "Return exactly one of: Tier 1, Tier 2, Tier 3."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Chief complaint: {chief_complaint}"
+                }
+            ],
+            temperature=0.1
+        )
+
+        tier = classification.choices[0].message.content.strip()
+
+        if tier not in ["Tier 1", "Tier 2", "Tier 3"]:
+            tier = "Tier 3"
+
+        interval_hours = {
+            "Tier 1": "2-3",
+            "Tier 2": "5-6",
+            "Tier 3": "7-8"
+        }[tier]
+
+    # Post-Score phase (analyzes prior stability score)
+
+    elif request.phase == "post_score":
+
+        score_response = await calculate_stability_score(
+            ScoreRequest(session_id=request.session_id)
+        )
+
+        stability_score = score_response.total_score
+
+        score = int(
+            stability_score.split("/")[0]
+        )
+
+        if score >= 90:
+            tier = "Excellent"
+            interval_hours = "12-24"
+
+        elif score >= 70:
+            tier = "Stable"
+            interval_hours = "8-12"
+
+        elif score >= 50:
+            tier = "Caution"
+            interval_hours = "4-6"
+
+        else:
+            tier = "Urgent"
+            interval_hours = "1-2"
+
+    # Notification generation
+    
+    prompt = POST_VISIT_NOTIFICATION_PROMPT.format(
+        patient_name=patient_name,
+        chief_complaint=chief_complaint,
+        phase=request.phase,
+        stability_score=stability_score,
+        tier=tier,
+        interval_hours=interval_hours
+    )
+
+    try:
+        completion = await client.chat.completions.create(
+            model=DEPLOYMENT_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You generate safe post-visit notifications."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.2
+        )
+
+        return NotificationResponse(
+            notification=completion.choices[0].message.content.strip(),
+            tier=tier,
+            interval_hours=interval_hours
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
 
 @app.post("/generate-report", summary="Generate and Download Post-Visit PDF")
 async def generate_report(request: ReportRequest):
